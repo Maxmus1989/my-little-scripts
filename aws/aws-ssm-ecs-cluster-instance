@@ -1,0 +1,67 @@
+#!/bin/bash
+set -euo pipefail
+
+# Use environment $AWS_PROFILE or 'default' AWS profile if passed in first args (aws profile name) is not been created.
+CREATED_AWS_PROFILES=$(grep '\[profile\s\S*\]' ~/.aws/config | sed 's/\[profile\ \(.*\)\]/\1/g' | tr ' \n' ' ' | sed 's/.$//')
+DEFAULT_AWS_PROFILE=$([[ ! -z "$AWS_PROFILE" ]] && echo "$AWS_PROFILE" || echo "default")
+AWS_PROFILE=$([[ ${CREATED_AWS_PROFILES[*]} =~ (^|[[:space:]])"${1:-}"($|[[:space:]]) ]] && echo "$1" || echo "$DEFAULT_AWS_PROFILE")
+
+echo "Avaliable aws profiles: [$CREATED_AWS_PROFILES]"
+echo "Using: $AWS_PROFILE"
+
+
+echo
+# List ECS clusters
+AWS_LIST_CLUSTERS_COMMAND="aws --profile $AWS_PROFILE ecs list-clusters"
+AWS_LIST_CLUSTERS_COMMAND_RESULT=$($AWS_LIST_CLUSTERS_COMMAND)
+AWS_LIST_CLUSTERS_RESULT=$(echo $AWS_LIST_CLUSTERS_COMMAND_RESULT | sed -e 's/{ \"clusterArns\": \[ \(.*\)\] }/\1/g' -e 's/\"//g' -e 's/\, / /g')
+AWS_LIST_CLUSTERS_RESULT_ARRAY=($AWS_LIST_CLUSTERS_RESULT)
+
+echo "Total ECS clusters found: ${#AWS_LIST_CLUSTERS_RESULT_ARRAY[@]}"
+for index in "${!AWS_LIST_CLUSTERS_RESULT_ARRAY[@]}"
+do
+  echo "$((index + 1)): ${AWS_LIST_CLUSTERS_RESULT_ARRAY[index]}"
+done
+
+
+echo
+# Read user input for cluster selection
+read -p "Select a cluster: " SELECTED_CLUSTER_NO
+SELEDTED_CLUSTER_ARN="${AWS_LIST_CLUSTERS_RESULT_ARRAY[$((SELECTED_CLUSTER_NO - 1))]}"
+echo "Selected cluster: $SELEDTED_CLUSTER_ARN"
+
+
+echo
+# List ECS cluster container instances
+AWS_LIST_CLUSTER_CONTAINER_INSTANCES_COMMAND="aws --profile $AWS_PROFILE ecs list-container-instances --cluster $SELEDTED_CLUSTER_ARN"
+AWS_LIST_CLUSTER_CONTAINER_INSTANCES_COMMAND_RESULT=$($AWS_LIST_CLUSTER_CONTAINER_INSTANCES_COMMAND)
+AWS_LIST_CLUSTER_CONTAINER_INSTANCES_RESULT=$(echo $AWS_LIST_CLUSTER_CONTAINER_INSTANCES_COMMAND_RESULT | sed -e 's/{ \"containerInstanceArns\": \[ \(.*\)\] }/\1/g' -e 's/\"//g' -e 's/\, / /g')
+AWS_LIST_CLUSTER_CONTAINER_INSTANCES_RESULT_ARRAY=($AWS_LIST_CLUSTER_CONTAINER_INSTANCES_RESULT)
+AWS_CLUSTER_EC2_INSTANCE_IDS=()
+
+echo "Total EC2 instances: ${#AWS_LIST_CLUSTER_CONTAINER_INSTANCES_RESULT_ARRAY[@]}"
+for index in "${!AWS_LIST_CLUSTER_CONTAINER_INSTANCES_RESULT_ARRAY[@]}"
+do
+  CURRENT_CONTAINER_INSTANCE_ARN="${AWS_LIST_CLUSTER_CONTAINER_INSTANCES_RESULT_ARRAY[index]}"
+  AWS_DESCRIBE_CONTAINER_INSTANCES_COMMAND="aws --profile $AWS_PROFILE ecs describe-container-instances --cluster $SELEDTED_CLUSTER_ARN --container-instances $CURRENT_CONTAINER_INSTANCE_ARN"
+  AWS_DESCRIBE_CONTAINER_INSTANCES_COMMAND_RESULT=$($AWS_DESCRIBE_CONTAINER_INSTANCES_COMMAND)
+  AWS_EC2_INSTANCE_ID=$(echo $AWS_DESCRIBE_CONTAINER_INSTANCES_COMMAND_RESULT | grep -o '"ec2InstanceId": "[^"]*"' | sed 's/"ec2InstanceId": "\(.*\)"/\1/g')
+  AWS_CLUSTER_EC2_INSTANCE_IDS[index]=$AWS_EC2_INSTANCE_ID
+  
+  echo "$((index + 1)): $AWS_EC2_INSTANCE_ID ($CURRENT_CONTAINER_INSTANCE_ARN)"
+done
+
+
+echo
+# Read user input for instance selection
+read -p "Select an instance: " SELECTED_INSTANCE_NO
+SELEDTED_INSTANCE_ID="${AWS_CLUSTER_EC2_INSTANCE_IDS[$((SELECTED_INSTANCE_NO - 1))]}"
+echo "Selected EC2 instance ID: $SELEDTED_INSTANCE_ID"
+
+
+echo
+# Start a session to EC2 instance via AWS Systems Manager
+AWS_SSM_COMMAND="aws --profile $AWS_PROFILE ssm start-session --target $SELEDTED_INSTANCE_ID"
+
+$AWS_SSM_COMMAND
+
